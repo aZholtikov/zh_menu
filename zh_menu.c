@@ -22,7 +22,7 @@ static const char *TAG = "zh_menu";
         return err;                                  \
     }
 
-#define ZH_MENU_MAX_DEPTH 8 /*!< Maximum depth of nested submenus. Limits the navigation stack size. */
+#define ZH_MENU_MAX_DEPTH 8 /*!< Maximum depth of nested submenus. Limits the navigation stack size */
 
 /**
  * @brief Internal representation of the menu handle.
