@@ -53,7 +53,7 @@ struct _zh_menu_handle_t
 esp_err_t zh_menu_init(const zh_menu_init_config_t *config, zh_menu_handle_t **handle)
 {
     ZH_LOGI("Menu initialization started.");
-    ZH_ERROR_CHECK(config != NULL && config->root != NULL && handle != NULL, ESP_ERR_INVALID_ARG, NULL, "Menu initialization failed. Invalid argument.");
+    ZH_ERROR_CHECK(config != NULL && config->root != NULL && handle != NULL && config->root->submenu != NULL && config->root->item_numbers != 0, ESP_ERR_INVALID_ARG, NULL, "Menu initialization failed. Invalid argument.");
     ZH_ERROR_CHECK(*handle == NULL, ESP_ERR_INVALID_STATE, NULL, "Menu initialization failed. Menu is already initialized.");
     *handle = heap_caps_calloc(1, sizeof(zh_menu_handle_t), MALLOC_CAP_8BIT);
     ZH_ERROR_CHECK(*handle != NULL, ESP_ERR_NO_MEM, NULL, "Menu initialization failed. Failed to allocate menu handle.");
@@ -80,7 +80,7 @@ esp_err_t zh_menu_deinit(zh_menu_handle_t **handle)
 esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, void *arg)
 {
     ZH_LOGI("Menu set position started.");
-    ZH_ERROR_CHECK(handle != NULL && *handle != NULL && command < ZH_MENU_MAX, ESP_ERR_INVALID_ARG, NULL, "Menu set position failed. Invalid argument.");
+    ZH_ERROR_CHECK(handle != NULL && *handle != NULL && command >= ZH_MENU_ENTER && command < ZH_MENU_MAX, ESP_ERR_INVALID_ARG, NULL, "Menu set position failed. Invalid argument.");
     switch (command)
     {
     case ZH_MENU_ENTER:
@@ -91,6 +91,7 @@ esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, voi
             (*handle)->current_menu = (*handle)->root;
             (*handle)->current_index = 0;
             (*handle)->menu_depth = 0;
+            memset((*handle)->menu_stack, 0, sizeof((*handle)->menu_stack));
             if ((*handle)->enter_cb != NULL)
             {
                 (*handle)->enter_cb(arg);
@@ -111,6 +112,10 @@ esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, voi
         }
         break;
     case ZH_MENU_UP:
+        if ((*handle)->current_menu == NULL || (*handle)->current_menu->item_numbers == 0)
+        {
+            break;
+        }
         if ((*handle)->is_activated == true && (*handle)->is_selected == false)
         {
             if ((*handle)->current_index > 0)
@@ -128,6 +133,10 @@ esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, voi
         }
         break;
     case ZH_MENU_DOWN:
+        if ((*handle)->current_menu == NULL || (*handle)->current_menu->item_numbers == 0)
+        {
+            break;
+        }
         if ((*handle)->is_activated == true && (*handle)->is_selected == false)
         {
             if ((*handle)->current_index < (*handle)->current_menu->item_numbers - 1)
@@ -147,6 +156,10 @@ esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, voi
     case ZH_MENU_SELECT:
         if ((*handle)->is_activated == true)
         {
+            if ((*handle)->current_menu->submenu == NULL || (*handle)->current_index >= (*handle)->current_menu->item_numbers)
+            {
+                break;
+            }
             if ((*handle)->is_selected == true)
             {
                 if ((*handle)->current_menu->submenu[(*handle)->current_index].item_cb != NULL)
@@ -168,11 +181,12 @@ esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, voi
             }
             else if ((*handle)->current_menu->submenu[(*handle)->current_index].submenu != NULL && (*handle)->current_menu->submenu[(*handle)->current_index].item_numbers > 0)
             {
-                if ((*handle)->menu_depth < ZH_MENU_MAX_DEPTH)
+                if ((*handle)->menu_depth >= ZH_MENU_MAX_DEPTH)
                 {
-                    (*handle)->menu_stack[(*handle)->menu_depth] = (*handle)->current_menu;
-                    ++(*handle)->menu_depth;
+                    break;
                 }
+                (*handle)->menu_stack[(*handle)->menu_depth] = (*handle)->current_menu;
+                ++(*handle)->menu_depth;
                 (*handle)->current_menu = &(*handle)->current_menu->submenu[(*handle)->current_index];
                 (*handle)->current_index = 0;
                 if ((*handle)->change_cb != NULL)
@@ -198,6 +212,7 @@ esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, voi
             {
                 --(*handle)->menu_depth;
                 (*handle)->current_menu = (*handle)->menu_stack[(*handle)->menu_depth];
+                (*handle)->menu_stack[(*handle)->menu_depth] = NULL;
                 (*handle)->current_index = 0;
                 if ((*handle)->change_cb != NULL)
                 {
@@ -211,6 +226,7 @@ esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, voi
                 (*handle)->current_menu = (*handle)->root;
                 (*handle)->current_index = 0;
                 (*handle)->menu_depth = 0;
+                memset((*handle)->menu_stack, 0, sizeof((*handle)->menu_stack));
                 if ((*handle)->exit_cb != NULL)
                 {
                     (*handle)->exit_cb(arg);
