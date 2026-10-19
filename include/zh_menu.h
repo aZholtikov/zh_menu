@@ -23,9 +23,9 @@
  * - Flexible handling of selectable and non-selectable items
  * - Low memory footprint due to dynamic allocation of the handle
  *
- * @note The component functions are thread-safe only to the extent
- *       provided by the caller. External synchronization is required
- *       when accessed from multiple tasks.
+ * @note Internal state is protected by a spinlock. Callbacks are invoked
+ *       outside the critical section. Callers must not call functions on the
+ *       same handle concurrently from multiple contexts.
  */
 
 #pragma once
@@ -34,11 +34,27 @@
 #include "esp_err.h"
 #include "esp_log.h"
 #include "esp_heap_caps.h"
+#include "freertos/FreeRTOS.h"
+#include "freertos/task.h"
+
+#define ZH_MENU_INIT_CONFIG_DEFAULT()           \
+    {                                           \
+        .task_priority = 1,                     \
+        .stack_size = configMINIMAL_STACK_SIZE, \
+        .queue_size = 1}
 
 #ifdef __cplusplus
 extern "C"
 {
 #endif
+
+    /**
+     * @brief External task handle for the menu processing task.
+     *
+     * Declared as extern for access by internal modules that need
+     * to reference the shared processing task directly.
+     */
+    extern TaskHandle_t zh_menu;
 
     /**
      * @brief Opaque menu handle.
@@ -108,7 +124,16 @@ extern "C"
         void (*enter_cb)(void *args);                                           /*!< Callback for entering the menu */
         void (*exit_cb)(void *args);                                            /*!< Callback for exiting the menu */
         bool loop;                                                              /*!< Cyclic navigation flag over items */
+        uint16_t stack_size;                                                    /*!< Stack size for the shared processing task, minimum configMINIMAL_STACK_SIZE */
+        uint8_t task_priority;                                                  /*!< Task priority for the shared processing task, minimum value 1 */
+        uint8_t queue_size;                                                     /*!< Queue size for the shared processing queue, minimum value 1 */
     } zh_menu_init_config_t;
+
+    typedef struct
+    {
+        uint32_t queue_overflow_error; /*!< Number of queue overflow errors */
+        uint32_t min_stack_size;       /*!< Minimum free stack size (watermark) */
+    } zh_menu_stats_t;
 
     /**
      * @brief Initialize the menu.
@@ -118,7 +143,7 @@ extern "C"
      * an inactive state until the ZH_MENU_ENTER command.
      *
      * @param[in] config Initialization configuration (must not be NULL)
-     * @param[out] handle Pointer to the handle pointer (must be NULL)
+     * @param[out] handle Pointer to the handle pointer (must point to NULL)
      *
      * @return ESP_OK on success
      * @return ESP_ERR_INVALID_ARG if config, config->root or handle is NULL
@@ -136,6 +161,8 @@ extern "C"
      *
      * @return ESP_OK on success
      * @return ESP_ERR_INVALID_ARG if handle or *handle is NULL
+     *
+     * @note The processing task and queue are deleted only when the last menu handle is deinitialized.
      */
     esp_err_t zh_menu_deinit(zh_menu_handle_t **handle);
 
@@ -147,15 +174,16 @@ extern "C"
      * The exact behavior depends on the current activity and selection state.
      *
      * @param[in,out] handle Pointer to the handle pointer (must not be NULL)
-     * @param[in] command Navigation command. Must be less than ZH_MENU_MAX
-     * @param[in] arg Arbitrary argument passed to the user callbacks (enter_cb, exit_cb, item_cb) (may be NULL)
+     * @param[in] command Navigation command. Must be >= ZH_MENU_ENTER and < ZH_MENU_MAX
+     * @param[in] arg Arbitrary argument passed to the user callbacks (enter_cb, exit_cb, item_cb) (may be NULL when arg_size is 0)
+     * @param[in] arg_size Size of the argument data in bytes (must be <= ZH_MENU_ARG_MAX_SIZE)
      *
      * @return ESP_OK on success
-     * @return ESP_ERR_INVALID_ARG if handle, *handle is NULL or command >= ZH_MENU_MAX
+     * @return ESP_ERR_INVALID_ARG if handle or *handle is NULL, command is out of range, or arg_size exceeds limit
      *
      * @note Commands that are invalid in the current state are ignored and do not cause an error.
      */
-    esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, void *arg);
+    esp_err_t zh_menu_set(zh_menu_handle_t **handle, zh_menu_navigate_t command, const void *arg, uint8_t arg_size);
 
     /**
      * @brief Get the current menu state.
@@ -169,6 +197,24 @@ extern "C"
      * @return ESP_ERR_INVALID_ARG if handle, *handle or status is NULL
      */
     esp_err_t zh_menu_get(zh_menu_handle_t **handle, zh_menu_status_t *status);
+
+    /**
+     * @brief Retrieve statistics about the menu.
+     *
+     * Returns a pointer to the current statistics structure containing
+     * queue overflow error count and minimum free stack size.
+     *
+     * @return Pointer to the statistics structure (never NULL)
+     */
+    const zh_menu_stats_t *zh_menu_get_stats(void);
+
+    /**
+     * @brief Reset all menu statistics to zero.
+     *
+     * Clears the queue overflow error counter and resets the minimum
+     * free stack size watermark.
+     */
+    void zh_menu_reset_stats(void);
 
 #ifdef __cplusplus
 }
