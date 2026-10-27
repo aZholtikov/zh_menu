@@ -14,8 +14,9 @@ which is distributed under the Apache License, Version 2.0. The original code ha
 5. Support for simple action items that trigger a one-shot callback on selection.
 6. Built-in navigation stack that allows returning to the previous menu level.
 7. Optional cyclic navigation mode for scrolling through menu items in a loop.
-8. Minimal memory footprint with a single dynamically allocated handle and no per-node heap usage.
-9. Built-in statistics for queue overflow errors and task stack watermark.
+8. Viewport scrolling: only `viewport_rows` items are shown at once, the selected item always stays visible, and `↑`/`↓` (can be changed) indicators mark hidden items above/below the window. The menu header is always rendered separately and is never scrolled.
+9. Minimal memory footprint with a single dynamically allocated handle and no per-node heap usage.
+10. Built-in statistics for queue overflow errors and task stack watermark.
 
 ## Using
 
@@ -39,6 +40,7 @@ In the application, add the component:
 #include "zh_encoder.h" // https://github.com/aZholtikov/zh_encoder
 
 #define ENCODER_NUMBER 0x01
+#define MENU_VIEWPORT_ROWS 2 // How many item rows fit on the screen (header not counted)
 
 zh_encoder_handle_t *encoder_handle = NULL;
 zh_menu_handle_t *menu_handle = NULL;
@@ -118,7 +120,8 @@ void app_main(void)
     menu_config.stack_size = configMINIMAL_STACK_SIZE;
     menu_config.queue_size = 5;
     menu_config.root = &main_menu;
-    menu_config.loop = true;
+    menu_config.loop = false;
+    menu_config.viewport_rows = MENU_VIEWPORT_ROWS;
     menu_config.enter_cb = &zh_menu_enter_main_menu_callback; // Optional.
     menu_config.exit_cb = &zh_menu_exit_main_menu_callback;   // Optional.
     menu_config.change_cb = &zh_menu_change_menu_callback;
@@ -173,12 +176,24 @@ void zh_menu_exit_main_menu_callback(void *arg)
 
 void zh_menu_change_menu_callback(zh_menu_node_t *current_node, uint8_t current_index)
 {
+    zh_menu_view_t view = {0};
+    zh_menu_get_view(&menu_handle, &view);
     printf("\n========== MENU ==========\n");
     printf("Menu: %s\n", current_node->label);
     printf("--------------------------\n");
-    for (uint8_t i = 0; i < current_node->item_numbers; ++i)
+    for (uint8_t i = 0; i < view.visible_count; ++i)
     {
-        printf("%c %s\n", i == current_index ? '>' : ' ', current_node->submenu[i].label);
+        uint8_t idx = view.first_visible + i;
+        printf("%c %s", (idx == current_index) ? '>' : ' ', current_node->submenu[idx].label);
+        if (i == 0 && view.first_visible > 0)
+        {
+            printf(" ↑");
+        }
+        if ((i == (uint8_t)(view.visible_count - 1)) && ((uint8_t)(view.first_visible + view.visible_count) < current_node->item_numbers))
+        {
+            printf(" ↓");
+        }
+        printf("\n");
     }
     printf("==========================\n\n");
     fflush(stdout);

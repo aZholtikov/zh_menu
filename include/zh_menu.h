@@ -21,6 +21,7 @@
  * - Configurable callbacks for position change, enter and exit
  * - Cyclic navigation mode over menu items
  * - Flexible handling of selectable and non-selectable items
+ * - Viewport scrolling with "sticky" selected item and `↑`/`↓` indicators
  * - Low memory footprint due to dynamic allocation of the handle
  *
  * @note Internal state is protected by a spinlock. Callbacks are invoked
@@ -41,7 +42,8 @@
     {                                           \
         .task_priority = 1,                     \
         .stack_size = configMINIMAL_STACK_SIZE, \
-        .queue_size = 1}
+        .queue_size = 1,                        \
+        .viewport_rows = 0}
 
 #ifdef __cplusplus
 extern "C"
@@ -110,6 +112,20 @@ extern "C"
     } zh_menu_status_t;
 
     /**
+     * @brief Visible window of the current menu level.
+     *
+     * Returned by zh_menu_get_view(). Use it in change_cb to render only
+     * the part of the menu that fits on the screen. The header (the label
+     * of the current menu node) is always rendered separately and is not
+     * part of the window.
+     */
+    typedef struct
+    {
+        uint8_t first_visible; /*!< Index of the first row to display */
+        uint8_t visible_count; /*!< Number of rows to display (may be less than viewport_rows) */
+    } zh_menu_view_t;
+
+    /**
      * @brief Menu initialization configuration.
      *
      * Contains the root node, a set of user callbacks and the cyclic navigation flag.
@@ -127,6 +143,7 @@ extern "C"
         uint16_t stack_size;                                                    /*!< Stack size for the shared processing task, minimum configMINIMAL_STACK_SIZE */
         uint8_t task_priority;                                                  /*!< Task priority for the shared processing task, minimum value 1 */
         uint8_t queue_size;                                                     /*!< Queue size for the shared processing queue, minimum value 1 */
+        uint8_t viewport_rows;                                                  /*!< Number of visible rows on the screen (header not counted). 0 = show all rows */
     } zh_menu_init_config_t;
 
     typedef struct
@@ -197,6 +214,23 @@ extern "C"
      * @return ESP_ERR_INVALID_ARG if handle, *handle or status is NULL
      */
     esp_err_t zh_menu_get(zh_menu_handle_t **handle, zh_menu_status_t *status);
+
+    /**
+     * @brief Get the current visible window of the menu.
+     *
+     * Returns the first visible row and the number of visible rows on the
+     * current level. Call it from change_cb to render only the part of the
+     * menu that fits on the screen. When viewport_rows is 0 or the current
+     * level has no more items than viewport_rows, first_visible is 0 and
+     * visible_count equals the number of items on the current level.
+     *
+     * @param[in] handle Pointer to the handle pointer (must not be NULL)
+     * @param[out] view Pointer to the view structure to be filled (must not be NULL)
+     *
+     * @return ESP_OK on success
+     * @return ESP_ERR_INVALID_ARG if handle, *handle or view is NULL
+     */
+    esp_err_t zh_menu_get_view(zh_menu_handle_t **handle, zh_menu_view_t *view);
 
     /**
      * @brief Retrieve statistics about the menu.

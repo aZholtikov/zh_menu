@@ -54,6 +54,8 @@ struct _zh_menu_handle_t
     bool loop;                                                              /*!< Cyclic navigation flag */
     uint8_t menu_depth;                                                     /*!< Current nesting depth */
     uint8_t current_index;                                                  /*!< Index of the highlighted item on the current level */
+    uint8_t viewport_rows;                                                  /*!< Number of visible rows (0 = show all) */
+    uint8_t scroll_offset;                                                  /*!< Index of the first visible row */
     bool is_activated;                                                      /*!< Menu activity flag */
     bool is_selected;                                                       /*!< Selection state flag of the current item */
     portMUX_TYPE lock;                                                      /*!< Spinlock protecting fields accessed from ISR and task context */
@@ -127,6 +129,16 @@ static esp_err_t _zh_menu_task_init(const zh_menu_init_config_t *config);
  * Cleans up resources to avoid leaks.
  */
 static void _zh_menu_rollback_task_and_resources(void);
+
+/**
+ * @brief Recalculate scroll_offset so that current_index stays in the window.
+ *
+ * Called whenever current_index changes, so the selected row is always visible.
+ * The window "sticks" to the edges only when necessary.
+ *
+ * @param handle Pointer to the menu handle (lock must be held by the caller)
+ */
+static void _zh_menu_adjust_scroll(zh_menu_handle_t *handle);
 
 /**
  * @brief Background task that processes menu navigation commands from the queue.
@@ -214,6 +226,33 @@ esp_err_t zh_menu_get(zh_menu_handle_t **handle, zh_menu_status_t *status)
     return ESP_OK;
 }
 
+esp_err_t zh_menu_get_view(zh_menu_handle_t **handle, zh_menu_view_t *view)
+{
+    ZH_LOGI("Menu get view started.");
+    ZH_ERROR_CHECK(handle != NULL && *handle != NULL && view != NULL, ESP_ERR_INVALID_ARG, NULL, "Menu get view failed. Invalid argument.");
+    taskENTER_CRITICAL(&(*handle)->lock);
+    if ((*handle)->current_menu == NULL)
+    {
+        view->first_visible = 0;
+        view->visible_count = 0;
+    }
+    else if ((*handle)->viewport_rows == 0 ||
+             (*handle)->current_menu->item_numbers <= (*handle)->viewport_rows)
+    {
+        view->first_visible = 0;
+        view->visible_count = (*handle)->current_menu->item_numbers;
+    }
+    else
+    {
+        view->first_visible = (*handle)->scroll_offset;
+        uint8_t rest = (*handle)->current_menu->item_numbers - (*handle)->scroll_offset;
+        view->visible_count = (rest > (*handle)->viewport_rows) ? (*handle)->viewport_rows : rest;
+    }
+    taskEXIT_CRITICAL(&(*handle)->lock);
+    ZH_LOGI("Menu get view completed successfully.");
+    return ESP_OK;
+}
+
 const zh_menu_stats_t *zh_menu_get_stats(void)
 {
     return &_stats;
@@ -238,6 +277,8 @@ static esp_err_t _zh_menu_validate_config(const zh_menu_init_config_t *config, z
     handle->current_menu = config->root;
     handle->root = config->root;
     handle->loop = config->loop;
+    handle->viewport_rows = config->viewport_rows;
+    handle->scroll_offset = 0;
     return ESP_OK;
 }
 
@@ -278,6 +319,33 @@ static void _zh_menu_rollback_task_and_resources(void)
     }
 }
 
+static void _zh_menu_adjust_scroll(zh_menu_handle_t *handle)
+{
+    if (handle->current_menu == NULL || handle->viewport_rows == 0)
+    {
+        handle->scroll_offset = 0;
+        return;
+    }
+    uint8_t total = handle->current_menu->item_numbers;
+    if (total <= handle->viewport_rows)
+    {
+        handle->scroll_offset = 0;
+        return;
+    }
+    if (handle->current_index < handle->scroll_offset)
+    {
+        handle->scroll_offset = handle->current_index;
+    }
+    else if (handle->current_index >= (uint8_t)(handle->scroll_offset + handle->viewport_rows))
+    {
+        handle->scroll_offset = handle->current_index - handle->viewport_rows + 1;
+    }
+    if (handle->scroll_offset > (uint8_t)(total - handle->viewport_rows))
+    {
+        handle->scroll_offset = total - handle->viewport_rows;
+    }
+}
+
 static void _zh_menu_isr_processing_task(void *pvParameter)
 {
     (void)pvParameter;
@@ -302,6 +370,7 @@ static void _zh_menu_isr_processing_task(void *pvParameter)
                 handle->is_selected = false;
                 handle->current_menu = handle->root;
                 handle->current_index = 0;
+                handle->scroll_offset = 0;
                 handle->menu_depth = 0;
                 memset(handle->menu_stack, 0, sizeof(handle->menu_stack));
                 enter_cb = handle->enter_cb;
@@ -336,6 +405,7 @@ static void _zh_menu_isr_processing_task(void *pvParameter)
                 {
                     handle->current_index = handle->current_menu->item_numbers - 1;
                 }
+                _zh_menu_adjust_scroll(handle);
                 if (handle->change_cb != NULL)
                 {
                     change_cb = handle->change_cb;
@@ -359,6 +429,7 @@ static void _zh_menu_isr_processing_task(void *pvParameter)
                 {
                     handle->current_index = 0;
                 }
+                _zh_menu_adjust_scroll(handle);
                 if (handle->change_cb != NULL)
                 {
                     change_cb = handle->change_cb;
@@ -405,6 +476,7 @@ static void _zh_menu_isr_processing_task(void *pvParameter)
                         ++handle->menu_depth;
                         handle->current_menu = item;
                         handle->current_index = 0;
+                        handle->scroll_offset = 0;
                         if (handle->change_cb != NULL)
                         {
                             change_cb = handle->change_cb;
@@ -436,6 +508,7 @@ static void _zh_menu_isr_processing_task(void *pvParameter)
                 handle->current_menu = handle->menu_stack[handle->menu_depth];
                 handle->menu_stack[handle->menu_depth] = NULL;
                 handle->current_index = 0;
+                handle->scroll_offset = 0;
                 if (handle->change_cb != NULL)
                 {
                     change_cb = handle->change_cb;
@@ -449,6 +522,7 @@ static void _zh_menu_isr_processing_task(void *pvParameter)
                 handle->is_selected = false;
                 handle->current_menu = handle->root;
                 handle->current_index = 0;
+                handle->scroll_offset = 0;
                 handle->menu_depth = 0;
                 memset(handle->menu_stack, 0, sizeof(handle->menu_stack));
                 exit_cb = handle->exit_cb;
