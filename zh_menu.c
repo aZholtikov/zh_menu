@@ -40,7 +40,6 @@ static const char *TAG = "zh_menu";
  * item.
  *
  * @note The menu_stack is used to return to the previous level on the ZH_MENU_BACK command.
- *
  * @warning When ZH_MENU_MAX_DEPTH is reached, further descent is not performed to avoid stack overflow.
  */
 struct _zh_menu_handle_t
